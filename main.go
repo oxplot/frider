@@ -8,6 +8,7 @@ import (
 	"fmt"
 	htemplate "html/template"
 	"log"
+	"net/smtp"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,14 +34,14 @@ type Config struct {
 		feedUIDTpl *ttemplate.Template
 	} `yaml:"storage"`
 	SMTP struct {
-		Sender     string `yaml:"sender"`
-		senderTpl  *ttemplate.Template
-		Recipients []string `yaml:"recipients"`
-		Host       string   `yaml:"host"`
-		Port       int      `yaml:"port"`
-		Username   string   `yaml:"username"`
-		Password   string   `yaml:"password"`
-		Jobs       int      `yaml:"jobs"`
+		Sender    string `yaml:"sender"`
+		senderTpl *ttemplate.Template
+		Recipient string `yaml:"recipient"`
+		Host      string `yaml:"host"`
+		Port      int    `yaml:"port"`
+		Username  string `yaml:"username"`
+		Password  string `yaml:"password"`
+		Jobs      int    `yaml:"jobs"`
 	} `yaml:"smtp"`
 	Email struct {
 		Subject    string `yaml:"subject"`
@@ -106,11 +107,47 @@ func (s *storage) set(k string) {
 }
 
 func sendEmails(c chan feedItem, done func()) {
-	//var buf bytes.Buffer
+	var buf bytes.Buffer
+	auth := smtp.PlainAuth("", config.SMTP.Username, config.SMTP.Password, config.SMTP.Host)
+	smtpAddr := fmt.Sprintf("%s:%d", config.SMTP.Host, config.SMTP.Port)
+
 	for fi := range c {
 		uid, _ := calcItemUID(fi) // processDomainFeeds ensures we don't get errors here
-		log.Printf("sending email: %s %s %s", uid, fi.Feed.Title, fi.Item.Title)
+
+		if err := config.SMTP.senderTpl.Execute(&buf, fi); err != nil {
+			log.Printf("warn: failed to render sender tpl: %s", err)
+			continue
+		}
+		sender := string(buf.Bytes())
+		buf.Reset()
+
+		if err := config.Email.subjectTpl.Execute(&buf, fi); err != nil {
+			log.Printf("warn: failed to render subject tpl: %s", err)
+			continue
+		}
+		subject := string(buf.Bytes())
+		buf.Reset()
+
+		if err := config.Email.contentTpl.Execute(&buf, fi); err != nil {
+			log.Printf("warn: failed to render content tpl: %s", err)
+			continue
+		}
+		content := string(buf.Bytes())
+		buf.Reset()
+
+		msg := fmt.Sprintf(
+			"From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/html;charset=utf8\r\n\r\n%s",
+			sender, config.SMTP.Recipient, subject, content,
+		)
+
+		if err := smtp.SendMail(smtpAddr, auth, sender, []string{config.SMTP.Recipient}, []byte(msg)); err != nil {
+			log.Printf("warn: failed to send email: %s", err)
+			continue
+		}
+
+		store.set(uid)
 	}
+
 	done()
 }
 
@@ -223,7 +260,7 @@ func loadConfig(path string) (*Config, error) {
 	c.Storage.FeedUID = feedLinkTpl
 	c.SMTP.Jobs = 4
 	c.Email.Subject = "{{.Item.Title}}"
-	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{.Item.Html}}"
+	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{.Item.Content}}"
 
 	var f *os.File
 	var err error
