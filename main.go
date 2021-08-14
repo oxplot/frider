@@ -192,6 +192,7 @@ func sendEmails(c chan feedItem, done func()) {
 			log.Printf("warn: failed to send email: %s", err)
 			continue
 		}
+		log.Printf("info: sent feed email: %s - %s", fi.FeedSpec.Name, fi.Item.Title)
 
 		store.set(uid)
 	}
@@ -351,12 +352,15 @@ func loadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("can't parse email.content '%s': %s", c.Email.Content, err)
 	}
-	if _, err = os.Stat(filepath.Join(c.Storage.Path, ".frider")); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if _, err = os.Stat(filepath.Join(c.Storage.Path, ".frider")); err != nil {
 		return nil, fmt.Errorf("invalid storage path - must have .frider file inside: %s", err)
 	}
 	c.SMTP.host, c.SMTP.port, err = net.SplitHostPort(c.SMTP.Address)
 	if err != nil {
 		return nil, fmt.Errorf("can't parse smtp.address '%s': %s", c.SMTP.Address, err)
+	}
+	if c.SMTP.Password == "" {
+		c.SMTP.Password = os.Getenv("FRIDER_SMTP_PASSWORD")
 	}
 
 	return &c, nil
