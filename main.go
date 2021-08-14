@@ -3,15 +3,18 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
 	htemplate "html/template"
 	"log"
+	"net"
 	"net/smtp"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	ttemplate "text/template"
 	"time"
@@ -37,8 +40,9 @@ type Config struct {
 		Sender    string `yaml:"sender"`
 		senderTpl *ttemplate.Template
 		Recipient string `yaml:"recipient"`
-		Host      string `yaml:"host"`
-		Port      int    `yaml:"port"`
+		Address   string `yaml:"address"`
+		host      string
+		port      string
 		Username  string `yaml:"username"`
 		Password  string `yaml:"password"`
 		Jobs      int    `yaml:"jobs"`
@@ -69,6 +73,8 @@ var (
 	configPath = flag.String("config", os.Getenv("FRIDER_CONFIG"), "path to config file")
 	config     *Config
 	store      *storage
+
+	emailPat = regexp.MustCompile(`<([^>@]+@[^>]+)>`)
 )
 
 type storage struct {
@@ -106,10 +112,52 @@ func (s *storage) set(k string) {
 	f.Close()
 }
 
+func extractEmail(addr string) string {
+	m := emailPat.FindStringSubmatch(addr)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+func sendEmail(from, msg string) error {
+	auth := smtp.PlainAuth("", config.SMTP.Username, config.SMTP.Password, config.SMTP.host)
+	tlsconfig := &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         config.SMTP.host,
+	}
+	c, err := smtp.Dial(config.SMTP.Address)
+	if err != nil {
+		return err
+	}
+	c.StartTLS(tlsconfig)
+	if err = c.Auth(auth); err != nil {
+		return err
+	}
+	if err = c.Mail(extractEmail(from)); err != nil {
+		return err
+	}
+	if err = c.Rcpt(extractEmail(config.SMTP.Recipient)); err != nil {
+		return err
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write([]byte(msg))
+	if err != nil {
+		return err
+	}
+	err = w.Close()
+	if err != nil {
+		return err
+	}
+	c.Quit()
+	return nil
+}
+
 func sendEmails(c chan feedItem, done func()) {
 	var buf bytes.Buffer
-	auth := smtp.PlainAuth("", config.SMTP.Username, config.SMTP.Password, config.SMTP.Host)
-	smtpAddr := fmt.Sprintf("%s:%d", config.SMTP.Host, config.SMTP.Port)
 
 	for fi := range c {
 		uid, _ := calcItemUID(fi) // processDomainFeeds ensures we don't get errors here
@@ -140,7 +188,7 @@ func sendEmails(c chan feedItem, done func()) {
 			sender, config.SMTP.Recipient, subject, content,
 		)
 
-		if err := smtp.SendMail(smtpAddr, auth, sender, []string{config.SMTP.Recipient}, []byte(msg)); err != nil {
+		if err := sendEmail(sender, msg); err != nil {
 			log.Printf("warn: failed to send email: %s", err)
 			continue
 		}
@@ -260,7 +308,7 @@ func loadConfig(path string) (*Config, error) {
 	c.Storage.FeedUID = feedLinkTpl
 	c.SMTP.Jobs = 4
 	c.Email.Subject = "{{.Item.Title}}"
-	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{.Item.Content}}"
+	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{.Item.Content | noescape}}"
 
 	var f *os.File
 	var err error
@@ -295,12 +343,20 @@ func loadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("can't parse email.subject '%s': %s", c.Email.Subject, err)
 	}
-	c.Email.contentTpl, err = htemplate.New("").Parse(c.Email.Content)
+	c.Email.contentTpl, err = htemplate.New("").Funcs(htemplate.FuncMap{
+		"noescape": func(s string) htemplate.HTML {
+			return htemplate.HTML(s)
+		},
+	}).Parse(c.Email.Content)
 	if err != nil {
 		return nil, fmt.Errorf("can't parse email.content '%s': %s", c.Email.Content, err)
 	}
-	if _, err := os.Stat(filepath.Join(c.Storage.Path, ".frider")); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if _, err = os.Stat(filepath.Join(c.Storage.Path, ".frider")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("invalid storage path - must have .frider file inside: %s", err)
+	}
+	c.SMTP.host, c.SMTP.port, err = net.SplitHostPort(c.SMTP.Address)
+	if err != nil {
+		return nil, fmt.Errorf("can't parse smtp.address '%s': %s", c.SMTP.Address, err)
 	}
 
 	return &c, nil
