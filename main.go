@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"sync"
 	ttemplate "text/template"
 	"time"
 
@@ -32,10 +33,10 @@ type Config struct {
 		senderTpl  *ttemplate.Template
 		Recipients []string `yaml:"recipients"`
 		Host       string   `yaml:"host"`
-		Port       uint     `yaml:"port"`
+		Port       int      `yaml:"port"`
 		Username   string   `yaml:"username"`
 		Password   string   `yaml:"password"`
-		Jobs       uint     `yaml:"jobs"`
+		Jobs       int      `yaml:"jobs"`
 	} `yaml:"smtp"`
 	Email struct {
 		Subject    string `yaml:"subject"`
@@ -58,10 +59,16 @@ type feedItem struct {
 }
 
 var (
-	configPath  = flag.String("config", os.Getenv("FRIDER_CONFIG"), "path to config file")
-	printConfig = flag.Bool("print-config", false, "output current config to stdout and exit")
-	config      *Config
+	configPath = flag.String("config", os.Getenv("FRIDER_CONFIG"), "path to config file")
+	config     *Config
 )
+
+func sendEmails(c chan feedItem, done func()) {
+	for fi := range c {
+		log.Printf("sending email: %s %s", fi.Feed.Title, fi.Item.Title)
+	}
+	done()
+}
 
 func calcItemUID(i feedItem) (string, error) {
 	var buf bytes.Buffer
@@ -71,9 +78,9 @@ func calcItemUID(i feedItem) (string, error) {
 	return fmt.Sprintf("%x", sha256.Sum256(buf.Bytes())), nil
 }
 
-func processDomainFeeds(c chan *FeedSpec, done chan bool) {
+func processDomainFeeds(feedChan chan *FeedSpec, emailChan chan feedItem, done func()) {
 	parser := gofeed.NewParser()
-	for fs := range c {
+	for fs := range feedChan {
 		time.Sleep(sameDomainRequestDelay)
 		f, err := parser.ParseURL(fs.URL)
 		if err != nil {
@@ -87,10 +94,12 @@ func processDomainFeeds(c chan *FeedSpec, done chan bool) {
 				log.Printf("warn: failed to calculate item uid in feed '%s': %s", fs.Name, err)
 				continue
 			}
-			log.Printf("uid: %s", uid)
+			// TODO check storage
+			_ = uid
+			emailChan <- fi
 		}
 	}
-	close(done)
+	done()
 }
 
 func run() error {
@@ -99,15 +108,15 @@ func run() error {
 		return fmt.Errorf("failed to load config: %s", err)
 	}
 
-	if *printConfig {
-		return yaml.NewEncoder(os.Stdout).Encode(config)
+	emailerWG := sync.WaitGroup{}
+	emailChan := make(chan feedItem)
+	emailerWG.Add(config.SMTP.Jobs)
+	for i := 0; i < config.SMTP.Jobs; i++ {
+		go sendEmails(emailChan, emailerWG.Done)
 	}
 
-	type domainFeed struct {
-		c    chan *FeedSpec
-		done chan bool
-	}
-	domains := map[string]domainFeed{}
+	domainWG := sync.WaitGroup{}
+	domains := map[string]chan *FeedSpec{}
 
 	for _, f := range config.Feeds {
 		u, err := url.Parse(f.URL)
@@ -117,21 +126,23 @@ func run() error {
 		}
 		f.parsedURL = u
 
-		dom, ok := domains[f.parsedURL.Host]
+		feedChan, ok := domains[f.parsedURL.Host]
 		if !ok {
-			dom = domainFeed{c: make(chan *FeedSpec), done: make(chan bool)}
-			domains[f.parsedURL.Host] = dom
-			go processDomainFeeds(dom.c, dom.done)
+			domainWG.Add(1)
+			feedChan = make(chan *FeedSpec)
+			domains[f.parsedURL.Host] = feedChan
+			go processDomainFeeds(feedChan, emailChan, domainWG.Done)
 		}
-		dom.c <- f
+		feedChan <- f
 	}
 
 	for _, d := range domains {
-		close(d.c)
+		close(d)
 	}
-	for _, d := range domains {
-		<-d.done
-	}
+
+	domainWG.Wait()
+	close(emailChan)
+	emailerWG.Wait()
 
 	return nil
 }
