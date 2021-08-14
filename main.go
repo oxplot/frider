@@ -220,6 +220,7 @@ func processDomainFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done fu
 	parser := gofeed.NewParser()
 	for fs := range feedChan {
 		time.Sleep(sameDomainRequestDelay)
+		log.Printf("info: processing feed: %s", fs.Name)
 
 		f, err := parser.ParseURL(fs.URL)
 		if err != nil {
@@ -264,7 +265,7 @@ func run() error {
 	store = &storage{path: config.Storage.Path}
 
 	emailerWG := sync.WaitGroup{}
-	itemChan := make(chan feedItem)
+	itemChan := make(chan feedItem, 1000)
 	emailerWG.Add(config.SMTP.Jobs)
 	for i := 0; i < config.SMTP.Jobs; i++ {
 		go sendEmails(itemChan, emailerWG.Done)
@@ -284,7 +285,7 @@ func run() error {
 		feedChan, ok := domains[f.parsedURL.Host]
 		if !ok {
 			domainWG.Add(1)
-			feedChan = make(chan *FeedSpec)
+			feedChan = make(chan *FeedSpec, 1000)
 			domains[f.parsedURL.Host] = feedChan
 			go processDomainFeeds(feedChan, itemChan, domainWG.Done)
 		}
@@ -309,7 +310,7 @@ func loadConfig(path string) (*Config, error) {
 	c.Storage.FeedUID = feedLinkTpl
 	c.SMTP.Jobs = 4
 	c.Email.Subject = "{{.Item.Title}}"
-	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{.Item.Content | noescape}}"
+	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{(or .Item.Description .Item.Content) | noescape}}"
 
 	var f *os.File
 	var err error
