@@ -13,7 +13,7 @@ import (
 )
 
 type Config struct {
-	Feeds map[string]*FeedSpec `yaml:"feeds"`
+	Feeds []*FeedSpec `yaml:"feeds"`
 	SMTP  struct {
 		Sender     string   `yaml:"sender"`
 		Recipients []string `yaml:"recipients"`
@@ -22,10 +22,14 @@ type Config struct {
 		Username   string   `yaml:"username"`
 		Password   string   `yaml:"password"`
 	} `yaml:"smtp"`
+	Email struct {
+		Subject     string `yaml:"subject"`
+		HTMLContent string `yaml:"html_content"`
+	} `yaml:"email"`
 }
 
 type FeedSpec struct {
-	name      string   `yaml:"-"`
+	Name      string   `yaml:"name"`
 	URL       string   `yaml:"url"`
 	parsedURL *url.URL `yaml:"-"`
 }
