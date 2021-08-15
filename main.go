@@ -74,7 +74,16 @@ var (
 	config     *Config
 	store      *storage
 
-	emailPat = regexp.MustCompile(`<([^>@]+@[^>]+)>`)
+	newlinePat = regexp.MustCompile(`[\r\n]+`)
+	emailPat   = regexp.MustCompile(`<([^>@]+@[^>]+)>`)
+	tplFuncs   = map[string]interface{}{
+		"noescape": func(s string) htemplate.HTML {
+			return htemplate.HTML(s)
+		},
+		"nonewlines": func(s string) string {
+			return newlinePat.ReplaceAllString(s, " ")
+		},
+	}
 )
 
 type storage struct {
@@ -309,7 +318,7 @@ func loadConfig(path string) (*Config, error) {
 	c.Storage.ItemUID = feedLinkTpl + "|{{.Item.Title}}|{{or .Item.GUID .Item.Link}}"
 	c.Storage.FeedUID = feedLinkTpl
 	c.SMTP.Jobs = 4
-	c.Email.Subject = "{{.Item.Title}}"
+	c.Email.Subject = "{{.Item.Title | nonewlines}}"
 	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{(or .Item.Description .Item.Content) | noescape}}"
 
 	var f *os.File
@@ -329,27 +338,23 @@ func loadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
-	c.Storage.itemUIDTpl, err = ttemplate.New("").Parse(c.Storage.ItemUID)
+	c.Storage.itemUIDTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Storage.ItemUID)
 	if err != nil {
 		return nil, fmt.Errorf("can't parse storage.item_uid '%s': %s", c.Storage.ItemUID, err)
 	}
-	c.Storage.feedUIDTpl, err = ttemplate.New("").Parse(c.Storage.FeedUID)
+	c.Storage.feedUIDTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Storage.FeedUID)
 	if err != nil {
 		return nil, fmt.Errorf("can't parse storage.feed_uid '%s': %s", c.Storage.FeedUID, err)
 	}
-	c.SMTP.senderTpl, err = ttemplate.New("").Parse(c.SMTP.Sender)
+	c.SMTP.senderTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.SMTP.Sender)
 	if err != nil {
 		return nil, fmt.Errorf("can't parse smtp.sender '%s': %s", c.SMTP.Sender, err)
 	}
-	c.Email.subjectTpl, err = ttemplate.New("").Parse(c.Email.Subject)
+	c.Email.subjectTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Email.Subject)
 	if err != nil {
 		return nil, fmt.Errorf("can't parse email.subject '%s': %s", c.Email.Subject, err)
 	}
-	c.Email.contentTpl, err = htemplate.New("").Funcs(htemplate.FuncMap{
-		"noescape": func(s string) htemplate.HTML {
-			return htemplate.HTML(s)
-		},
-	}).Parse(c.Email.Content)
+	c.Email.contentTpl, err = htemplate.New("").Funcs(tplFuncs).Parse(c.Email.Content)
 	if err != nil {
 		return nil, fmt.Errorf("can't parse email.content '%s': %s", c.Email.Content, err)
 	}
