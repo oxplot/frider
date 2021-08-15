@@ -26,6 +26,7 @@ import (
 
 const (
 	sameDomainRequestDelay = time.Second * 2
+	useragent              = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.131 Safari/537.36"
 )
 
 type Config struct {
@@ -227,6 +228,7 @@ func calcFeedUID(i feedItem) (string, error) {
 
 func processDomainFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done func()) {
 	parser := gofeed.NewParser()
+	parser.UserAgent = useragent
 	for fs := range feedChan {
 		time.Sleep(sameDomainRequestDelay)
 		log.Printf("info: processing feed: %s", fs.Name)
