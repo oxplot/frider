@@ -71,8 +71,11 @@ func NewConfig() *Config {
 	c.Exec.Jobs = 4
 	c.Email.Subject = "{{.Item.Title | nonewlines}}"
 	c.Email.Content = `<h2><a href="{{.Item.Link}}">{{.Item.Title}}</a></h2>
-{{if .Item.Description}}<pre>{{.Item.Description}}</pre>{{else}}{{.Item.Content | noescape}}{{end}}
-`
+{{if .Item.Content}}
+  {{.Item.Content | noescape}}
+{{else}}
+  <p style="white-space:pre-wrap">{{.Item.Description}}</p>
+{{end}}`
 	return &c
 }
 
