@@ -366,7 +366,7 @@ func processExecFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done func
 			} else {
 				errStr = err.Error()
 			}
-			log.Printf("warn: exec feed failed to run successfully: %s", errStr)
+			log.Printf("warn: failed to run exec feed '%s' successfully: %s", fs.Name, errStr)
 			continue
 		}
 
