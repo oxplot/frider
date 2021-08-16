@@ -164,7 +164,7 @@ var (
 
 	newlinePat = regexp.MustCompile(`[\r\n]+`)
 	emailPat   = regexp.MustCompile(`<([^>@]+@[^>]+)>`)
-	htmlTagPat = regexp.MustCompile(`</[A-Za-z]+>|&([a-z]+|[#]\d+);`)
+	htmlTagPat = regexp.MustCompile(`(?i)<(img|br|hr)[^>]*>|</[a-z]+>|&([a-z]+|[#]\d+);`)
 	tplFuncs   = map[string]interface{}{
 		"ishtml": func(s string) bool {
 			return htmlTagPat.MatchString(s)
