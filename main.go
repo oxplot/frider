@@ -116,7 +116,13 @@ func (c *Config) Load(r io.Reader) error {
 }
 
 func (c *Config) LoadFile(path string) error {
-	f, err := os.Open(path)
+	var err error
+	var f *os.File
+	if path == "-" {
+		f = os.Stdin
+	} else {
+		f, err = os.Open(*configPath)
+	}
 	if err != nil {
 		return err
 	}
