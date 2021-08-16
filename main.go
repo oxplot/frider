@@ -173,7 +173,8 @@ type storage struct {
 }
 
 func (s *storage) keyPath(k string) string {
-	return filepath.Join(s.path, k[:2], k[2:])
+	h := fmt.Sprintf("%x", sha256.Sum256([]byte(k)))
+	return filepath.Join(s.path, h[:2], h)
 }
 
 func (s *storage) has(k string) bool {
@@ -200,7 +201,11 @@ func (s *storage) set(k string) {
 		log.Printf("cannot create key '%s' in storage: %s", kp, err)
 		return
 	}
-	f.Close()
+	defer f.Close()
+	if _, err := f.Write([]byte(k)); err != nil {
+		log.Printf("cannot write content of key '%s' in storage: %s", kp, err)
+		return
+	}
 }
 
 func extractEmail(addr string) string {
@@ -295,7 +300,7 @@ func calcItemUID(i feedItem) (string, error) {
 	if err := config.Storage.itemUIDTpl.Execute(&buf, i); err != nil {
 		return "", fmt.Errorf("cannot calculate item UID")
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(buf.Bytes())), nil
+	return string(buf.Bytes()), nil
 }
 
 func calcFeedUID(i feedItem) (string, error) {
@@ -303,7 +308,7 @@ func calcFeedUID(i feedItem) (string, error) {
 	if err := config.Storage.feedUIDTpl.Execute(&buf, i); err != nil {
 		return "", fmt.Errorf("cannot calculate feed UID")
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(buf.Bytes())), nil
+	return string(buf.Bytes()), nil
 }
 
 func processDomainFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done func()) {
