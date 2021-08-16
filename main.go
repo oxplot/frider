@@ -310,7 +310,7 @@ func processDomainFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done fu
 	parser.UserAgent = useragent
 	for fs := range feedChan {
 		time.Sleep(sameDomainRequestDelay)
-		log.Printf("info: processing feed: %s", fs.Name)
+		log.Printf("info: processing url feed: %s", fs.Name)
 
 		f, err := parser.ParseURL(fs.URL)
 		if err != nil {
@@ -356,6 +356,7 @@ func processExecFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done func
 	defer done()
 	parser := gofeed.NewParser()
 	for fs := range feedChan {
+		log.Printf("info: processing exec feed: %s", fs.Name)
 
 		b, err := exec.Command(fs.Exec[0], fs.Exec[1:]...).Output()
 		if err != nil {
