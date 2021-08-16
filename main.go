@@ -8,11 +8,13 @@ import (
 	"flag"
 	"fmt"
 	htemplate "html/template"
+	"io"
 	"log"
 	"net"
 	"net/smtp"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sync"
@@ -55,11 +57,81 @@ type Config struct {
 		contentTpl *htemplate.Template
 	} `yaml:"email"`
 	Feeds []*FeedSpec `yaml:"feeds"`
+	Exec  struct {
+		Jobs int `yaml:"jobs"`
+	} `yaml:"exec"`
+}
+
+func NewConfig() *Config {
+	var c Config
+	feedLinkTpl := "{{or .Feed.Link .Feed.FeedLink .FeedSpec.URL}}"
+	c.Storage.ItemUID = feedLinkTpl + "|{{.Item.Title}}|{{or .Item.GUID .Item.Link}}"
+	c.Storage.FeedUID = feedLinkTpl
+	c.SMTP.Jobs = 4
+	c.Exec.Jobs = 4
+	c.Email.Subject = "{{.Item.Title | nonewlines}}"
+	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{(or .Item.Description .Item.Content) | noescape}}"
+	return &c
+}
+
+func (c *Config) Load(r io.Reader) error {
+	var err error
+	y := yaml.NewDecoder(r)
+	if err = y.Decode(&c); err != nil {
+		return err
+	}
+
+	c.Storage.itemUIDTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Storage.ItemUID)
+	if err != nil {
+		return fmt.Errorf("can't parse storage.item_uid '%s': %s", c.Storage.ItemUID, err)
+	}
+	c.Storage.feedUIDTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Storage.FeedUID)
+	if err != nil {
+		return fmt.Errorf("can't parse storage.feed_uid '%s': %s", c.Storage.FeedUID, err)
+	}
+	c.SMTP.senderTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.SMTP.Sender)
+	if err != nil {
+		return fmt.Errorf("can't parse smtp.sender '%s': %s", c.SMTP.Sender, err)
+	}
+	c.Email.subjectTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Email.Subject)
+	if err != nil {
+		return fmt.Errorf("can't parse email.subject '%s': %s", c.Email.Subject, err)
+	}
+	c.Email.contentTpl, err = htemplate.New("").Funcs(tplFuncs).Parse(c.Email.Content)
+	if err != nil {
+		return fmt.Errorf("can't parse email.content '%s': %s", c.Email.Content, err)
+	}
+	if _, err = os.Stat(filepath.Join(c.Storage.Path, ".frider")); err != nil {
+		return fmt.Errorf("invalid storage path - must have .frider file inside: %s", err)
+	}
+	c.SMTP.host, c.SMTP.port, err = net.SplitHostPort(c.SMTP.Address)
+	if err != nil {
+		return fmt.Errorf("can't parse smtp.address '%s': %s", c.SMTP.Address, err)
+	}
+	if c.SMTP.Password == "" {
+		c.SMTP.Password = os.Getenv("FRIDER_SMTP_PASSWORD")
+	}
+
+	return nil
+}
+
+func (c *Config) LoadFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return c.Load(f)
+}
+
+func (c *Config) Save(w io.Writer) error {
+	return yaml.NewEncoder(w).Encode(c)
 }
 
 type FeedSpec struct {
-	Name      string `yaml:"name"`
-	URL       string `yaml:"url"`
+	Name      string   `yaml:"name"`
+	URL       string   `yaml:"url"`
+	Exec      []string `yaml:"exec"`
 	parsedURL *url.URL
 }
 
@@ -71,9 +143,10 @@ type feedItem struct {
 }
 
 var (
-	configPath = flag.String("config", os.Getenv("FRIDER_CONFIG"), "path to config file")
-	config     *Config
-	store      *storage
+	configPath         = flag.String("config", os.Getenv("FRIDER_CONFIG"), "path to config file")
+	printDefaultConfig = flag.Bool("print-default-config", false, "print default config and exit")
+	config             *Config
+	store              *storage
 
 	newlinePat = regexp.MustCompile(`[\r\n]+`)
 	emailPat   = regexp.MustCompile(`<([^>@]+@[^>]+)>`)
@@ -167,6 +240,7 @@ func sendEmail(from, msg string) error {
 }
 
 func sendEmails(c chan feedItem, done func()) {
+	defer done()
 	var buf bytes.Buffer
 
 	for fi := range c {
@@ -206,8 +280,6 @@ func sendEmails(c chan feedItem, done func()) {
 
 		store.set(uid)
 	}
-
-	done()
 }
 
 func calcItemUID(i feedItem) (string, error) {
@@ -227,6 +299,7 @@ func calcFeedUID(i feedItem) (string, error) {
 }
 
 func processDomainFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done func()) {
+	defer done()
 	parser := gofeed.NewParser()
 	parser.UserAgent = useragent
 	for fs := range feedChan {
@@ -239,38 +312,80 @@ func processDomainFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done fu
 			continue
 		}
 
-		feedUID, err := calcFeedUID(feedItem{Feed: f, FeedSpec: fs, Config: config})
+		if err := processFeeds(fs, f, itemChan); err != nil {
+			log.Printf("warn: %s", err)
+		}
+	}
+}
+
+func processFeeds(fs *FeedSpec, f *gofeed.Feed, itemChan chan feedItem) error {
+	feedUID, err := calcFeedUID(feedItem{Feed: f, FeedSpec: fs, Config: config})
+	if err != nil {
+		return fmt.Errorf("failed to calculate feed uid in feed '%s': %s", fs.Name, err)
+	}
+	seenFeed := store.has(feedUID)
+
+	for _, i := range f.Items {
+		fi := feedItem{Feed: f, Item: i, FeedSpec: fs, Config: config}
+		itemUID, err := calcItemUID(fi)
 		if err != nil {
-			log.Printf("warn: failed to calculate feed uid in feed '%s': %s", fs.Name, err)
+			log.Printf("warn: failed to calculate item uid in feed '%s': %s", fs.Name, err)
 			continue
 		}
-		seenFeed := store.has(feedUID)
-
-		for _, i := range f.Items {
-			fi := feedItem{Feed: f, Item: i, FeedSpec: fs, Config: config}
-			itemUID, err := calcItemUID(fi)
-			if err != nil {
-				log.Printf("warn: failed to calculate item uid in feed '%s': %s", fs.Name, err)
+		if seenFeed {
+			if store.has(itemUID) {
 				continue
 			}
-			if seenFeed {
-				if store.has(itemUID) {
-					continue
-				}
-				itemChan <- fi
+			itemChan <- fi
+		} else {
+			store.set(itemUID)
+		}
+	}
+
+	store.set(feedUID)
+	return nil
+}
+
+func processExecFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done func()) {
+	defer done()
+	parser := gofeed.NewParser()
+	for fs := range feedChan {
+
+		b, err := exec.Command(fs.Exec[0], fs.Exec[1:]...).Output()
+		if err != nil {
+			var errStr string
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				errStr = string(exitErr.Stderr)
 			} else {
-				store.set(itemUID)
+				errStr = err.Error()
 			}
+			log.Printf("warn: exec feed failed to run successfully: %s", errStr)
+			continue
 		}
 
-		store.set(feedUID)
+		r := bytes.NewReader(b)
+		f, err := parser.Parse(r)
+		if err != nil {
+			log.Printf("warn: failed to parse exec feed '%s': %s", fs.Name, err)
+			continue
+		}
+
+		if err := processFeeds(fs, f, itemChan); err != nil {
+			log.Printf("warn: %s", err)
+		}
 	}
-	done()
 }
 
 func run() error {
 	var err error
-	if config, err = loadConfig(*configPath); err != nil {
+	config = NewConfig()
+	if *printDefaultConfig {
+		config.Save(os.Stdout)
+		return nil
+	}
+
+	if err = config.LoadFile(*configPath); err != nil {
 		return fmt.Errorf("failed to load config: %s", err)
 	}
 	store = &storage{path: config.Storage.Path}
@@ -282,7 +397,14 @@ func run() error {
 		go sendEmails(itemChan, emailerWG.Done)
 	}
 
-	domainWG := sync.WaitGroup{}
+	procWG := sync.WaitGroup{}
+
+	execFeedCh := make(chan *FeedSpec, 1000)
+	procWG.Add(config.Exec.Jobs)
+	for i := 0; i < config.Exec.Jobs; i++ {
+		go processExecFeeds(execFeedCh, itemChan, procWG.Done)
+	}
+
 	domains := map[string]chan *FeedSpec{}
 
 	for _, f := range config.Feeds {
@@ -293,85 +415,31 @@ func run() error {
 		}
 		f.parsedURL = u
 
-		feedChan, ok := domains[f.parsedURL.Host]
-		if !ok {
-			domainWG.Add(1)
-			feedChan = make(chan *FeedSpec, 1000)
-			domains[f.parsedURL.Host] = feedChan
-			go processDomainFeeds(feedChan, itemChan, domainWG.Done)
+		if len(f.Exec) > 0 {
+			execFeedCh <- f
+			continue
 		}
-		feedChan <- f
+
+		urlFeedChan, ok := domains[f.parsedURL.Host]
+		if !ok {
+			procWG.Add(1)
+			urlFeedChan = make(chan *FeedSpec, 1000)
+			domains[f.parsedURL.Host] = urlFeedChan
+			go processDomainFeeds(urlFeedChan, itemChan, procWG.Done)
+		}
+		urlFeedChan <- f
 	}
 
+	close(execFeedCh)
 	for _, d := range domains {
 		close(d)
 	}
 
-	domainWG.Wait()
+	procWG.Wait()
 	close(itemChan)
 	emailerWG.Wait()
 
 	return nil
-}
-
-func loadConfig(path string) (*Config, error) {
-	var c Config
-	feedLinkTpl := "{{or .Feed.Link .Feed.FeedLink .FeedSpec.URL}}"
-	c.Storage.ItemUID = feedLinkTpl + "|{{.Item.Title}}|{{or .Item.GUID .Item.Link}}"
-	c.Storage.FeedUID = feedLinkTpl
-	c.SMTP.Jobs = 4
-	c.Email.Subject = "{{.Item.Title | nonewlines}}"
-	c.Email.Content = "<h2><a href=\"{{.Item.Link}}\">{{.Item.Title}}</a></h2>{{(or .Item.Description .Item.Content) | noescape}}"
-
-	var f *os.File
-	var err error
-	if path == "-" {
-		f = os.Stdin
-	} else {
-		f, err = os.Open(*configPath)
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	y := yaml.NewDecoder(f)
-	if err = y.Decode(&c); err != nil {
-		return nil, err
-	}
-
-	c.Storage.itemUIDTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Storage.ItemUID)
-	if err != nil {
-		return nil, fmt.Errorf("can't parse storage.item_uid '%s': %s", c.Storage.ItemUID, err)
-	}
-	c.Storage.feedUIDTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Storage.FeedUID)
-	if err != nil {
-		return nil, fmt.Errorf("can't parse storage.feed_uid '%s': %s", c.Storage.FeedUID, err)
-	}
-	c.SMTP.senderTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.SMTP.Sender)
-	if err != nil {
-		return nil, fmt.Errorf("can't parse smtp.sender '%s': %s", c.SMTP.Sender, err)
-	}
-	c.Email.subjectTpl, err = ttemplate.New("").Funcs(tplFuncs).Parse(c.Email.Subject)
-	if err != nil {
-		return nil, fmt.Errorf("can't parse email.subject '%s': %s", c.Email.Subject, err)
-	}
-	c.Email.contentTpl, err = htemplate.New("").Funcs(tplFuncs).Parse(c.Email.Content)
-	if err != nil {
-		return nil, fmt.Errorf("can't parse email.content '%s': %s", c.Email.Content, err)
-	}
-	if _, err = os.Stat(filepath.Join(c.Storage.Path, ".frider")); err != nil {
-		return nil, fmt.Errorf("invalid storage path - must have .frider file inside: %s", err)
-	}
-	c.SMTP.host, c.SMTP.port, err = net.SplitHostPort(c.SMTP.Address)
-	if err != nil {
-		return nil, fmt.Errorf("can't parse smtp.address '%s': %s", c.SMTP.Address, err)
-	}
-	if c.SMTP.Password == "" {
-		c.SMTP.Password = os.Getenv("FRIDER_SMTP_PASSWORD")
-	}
-
-	return &c, nil
 }
 
 func main() {
