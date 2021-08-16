@@ -65,7 +65,7 @@ type Config struct {
 func NewConfig() *Config {
 	var c Config
 	feedLinkTpl := "{{or .Feed.FeedLink .FeedSpec.URL}}"
-	c.Storage.ItemUID = feedLinkTpl + "|{{.Item.Title}}|{{or .Item.GUID .Item.Link}}"
+	c.Storage.ItemUID = feedLinkTpl + "|{{or .Item.GUID .Item.Link}}"
 	c.Storage.FeedUID = feedLinkTpl
 	c.SMTP.Jobs = 4
 	c.Exec.Jobs = 4
