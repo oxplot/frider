@@ -71,11 +71,14 @@ func NewConfig() *Config {
 	c.Exec.Jobs = 4
 	c.Email.Subject = "{{.Item.Title | nonewlines}}"
 	c.Email.Content = `<h2><a href="{{.Item.Link}}">{{.Item.Title}}</a></h2>
-{{if .Item.Content}}
-  {{.Item.Content | noescape}}
-{{else}}
-  <p style="white-space:pre-wrap">{{.Item.Description}}</p>
-{{end}}`
+{{with $c := (.Item.Content or .Item.Description)}}
+  {{if (ishtml $c)}}
+    {{$c | noescape}}
+  {{else}}
+    <p style="white-space:pre-wrap">{{$c}}</p>
+  {{end}}
+{{end}}
+`
 	return &c
 }
 
@@ -161,7 +164,11 @@ var (
 
 	newlinePat = regexp.MustCompile(`[\r\n]+`)
 	emailPat   = regexp.MustCompile(`<([^>@]+@[^>]+)>`)
+	htmlTagPat = regexp.MustCompile(`</[A-Za-z]+>|&([a-z]+|[#]\d+);`)
 	tplFuncs   = map[string]interface{}{
+		"ishtml": func(s string) bool {
+			return htmlTagPat.MatchString(s)
+		},
 		"noescape": func(s string) htemplate.HTML {
 			return htemplate.HTML(s)
 		},
