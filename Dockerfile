@@ -5,7 +5,7 @@ WORKDIR /app
 COPY . /app/
 RUN go build -o frider
 
-FROM ubuntu
+FROM debian
 RUN apt update && apt install -y ca-certificates
 COPY --from=0 /app/frider /
 CMD /frider -config /frider.yaml
