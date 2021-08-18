@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/smtp"
 	"net/url"
 	"os"
@@ -143,10 +144,11 @@ func (c *Config) Save(w io.Writer) error {
 }
 
 type FeedSpec struct {
-	Name      string   `yaml:"name"`
-	URL       string   `yaml:"url"`
-	Exec      []string `yaml:"exec"`
-	parsedURL *url.URL
+	Name          string   `yaml:"name"`
+	URL           string   `yaml:"url"`
+	SkipTLSVerify bool     `yaml:"skip_tls_verify"`
+	Exec          []string `yaml:"exec"`
+	parsedURL     *url.URL
 }
 
 type feedItem struct {
@@ -323,11 +325,16 @@ func calcFeedUID(i feedItem) (string, error) {
 
 func processDomainFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done func()) {
 	defer done()
-	parser := gofeed.NewParser()
-	parser.UserAgent = useragent
 	for fs := range feedChan {
 		time.Sleep(sameDomainRequestDelay)
 		log.Printf("info: processing url feed: %s", fs.Name)
+
+		parser := gofeed.NewParser()
+		parser.UserAgent = useragent
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: fs.SkipTLSVerify},
+		}
+		parser.Client = &http.Client{Transport: tr}
 
 		f, err := parser.ParseURL(fs.URL)
 		if err != nil {
