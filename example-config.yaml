@@ -6,6 +6,8 @@ smtp:
   recipient: "Me Myself <me@example.com>"
   address: smtp.mailgun.com:587
   username: feed@example.com
+  # password: abcxyz123
+  # You can specify SMTP password via FRIDER_SMTP_PASSWORD env var
 
 feeds:
   - name: Apple Releases
