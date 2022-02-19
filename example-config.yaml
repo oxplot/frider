@@ -1,0 +1,28 @@
+storage:
+  path: data
+
+smtp:
+  sender: "{{.FeedSpec.Name}} <feed@example.com>"
+  recipient: "Me Myself <me@example.com>"
+  address: smtp.mailgun.com:587
+  username: feed@example.com
+
+feeds:
+  - name: Apple Releases
+    url: https://developer.apple.com/news/releases/rss/releases.rss
+  - name: Anandtech
+    url: https://www.anandtech.com/rss
+  - name: Arch
+    url: https://www.archlinux.org/feeds/news/
+  - name: HN
+    url: https://hnrss.org/newest?points=111
+
+  - name: The Limiting Factor
+    url: https://twitter.com/LimitingThe
+    exec: ["/opt/twitter-to-rss", "LimitingThe"]
+
+  - name: Not A Tesla App
+    url: http://rssgen:7799/feeds/not-a-tesla-app
+
+  - name: My HN Replies
+    url: http://rssgen:7799/feeds/my-hn-replies
