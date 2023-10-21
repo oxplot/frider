@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"errors"
@@ -336,7 +337,9 @@ func processDomainFeeds(feedChan chan *FeedSpec, itemChan chan feedItem, done fu
 		}
 		parser.Client = &http.Client{Transport: tr}
 
-		f, err := parser.ParseURL(fs.URL)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		f, err := parser.ParseURLWithContext(fs.URL, ctx)
+		cancel()
 		if err != nil {
 			log.Printf("warn: failed to parse feed '%s' url '%s': %s", fs.Name, fs.URL, err)
 			continue
