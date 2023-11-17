@@ -18,6 +18,8 @@ feeds:
     url: https://www.archlinux.org/feeds/news/
   - name: HN
     url: https://hnrss.org/newest?points=111
+    filter: |
+      return !(/tesla|elon|musk|spacex|starship|cybertruck/i.exec(item.Title));
 
   - name: The Limiting Factor
     url: https://twitter.com/LimitingThe

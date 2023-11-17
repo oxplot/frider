@@ -25,6 +25,7 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/mmcdole/gofeed"
+	"github.com/robertkrimen/otto"
 	"gopkg.in/yaml.v3"
 )
 
@@ -147,6 +148,7 @@ func (c *Config) Save(w io.Writer) error {
 type FeedSpec struct {
 	Name          string   `yaml:"name"`
 	URL           string   `yaml:"url"`
+	Filter        string   `yaml:"filter"`
 	SkipTLSVerify bool     `yaml:"skip_tls_verify"`
 	Exec          []string `yaml:"exec"`
 	parsedURL     *url.URL
@@ -368,6 +370,24 @@ func processFeeds(fs *FeedSpec, f *gofeed.Feed, itemChan chan feedItem) error {
 		if seenFeed {
 			if store.has(itemUID) {
 				continue
+			}
+			// Filter out items filtered by the feed filter.
+			if fs.Filter != "" {
+				vm := otto.New()
+				vm.Set("item", i)
+				ret, err := vm.Eval("(function(item){" + fs.Filter + "})(item);")
+				if err != nil {
+					log.Printf("warn: failed to evaluate filter '%s' in feed '%s': %s", fs.Filter, fs.Name, err)
+				} else {
+					b, err := ret.ToBoolean()
+					if err != nil {
+						log.Printf("warn: failed to convert filter result to boolean in feed '%s': %s", fs.Name, err)
+					} else {
+						if !b {
+							continue
+						}
+					}
+				}
 			}
 			itemChan <- fi
 		} else {
